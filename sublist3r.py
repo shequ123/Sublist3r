@@ -66,6 +66,13 @@ else:
     R = '\033[91m'  # red
     W = '\033[0m'   # white
 
+# constant
+proxies = {
+    'http': 'socks5://127.0.0.1:1081',
+    'https': 'socks5://127.0.0.1:1081'
+}
+#
+
 
 def banner():
     print("""%s
@@ -110,6 +117,7 @@ def write_file(filename, subdomains):
 
 
 def subdomain_sorting_key(hostname):
+    # (把hostname拆分开后从右到左搞成list返回，如果最左边是www则返回1)
     """Sorting key for subdomains
 
     This sorting key orders subdomains from the top-level domain at the right
@@ -154,6 +162,7 @@ class enumratorBase(object):
           }
         self.print_banner()
 
+    # print_方法，重写print，加上了silent判断
     def print_(self, text):
         if not self.silent:
             print(text)
@@ -164,20 +173,23 @@ class enumratorBase(object):
         self.print_(G + "[-] Searching now in %s.." % (self.engine_name) + W)
         return
 
+    # 发送请求，并返回
     def send_req(self, query, page_no=1):
 
         url = self.base_url.format(query=query, page_no=page_no)
         try:
-            resp = self.session.get(url, headers=self.headers, timeout=self.timeout)
+            resp = self.session.get(url, headers=self.headers, timeout=self.timeout,proxies=proxies)
         except Exception:
             resp = None
         return self.get_response(resp)
 
+    # 解析回应
     def get_response(self, response):
         if response is None:
             return 0
         return response.text if hasattr(response, "text") else response.content
 
+    
     def check_max_subdomains(self, count):
         if self.MAX_DOMAINS == 0:
             return False
@@ -212,6 +224,8 @@ class enumratorBase(object):
         """ chlid class that user different pagnation counter should override this function """
         return num + 10
 
+
+    # 这个是重点, 所有引擎都用到
     def enumerate(self, altquery=False):
         flag = True
         page_no = 0
@@ -219,14 +233,18 @@ class enumratorBase(object):
         retries = 0
 
         while flag:
+            # 返回查询语句,每次循环都多一个 -xxx.com把上一次查到的过滤掉
             query = self.generate_query()
+            # 数一下，已经有几个子域名了
             count = query.count(self.domain)  # finding the number of subdomains found so far
 
             # if they we reached the maximum number of subdomains in search query
             # then we should go over the pages
+            # 如果到达最大值，就看下一页
             if self.check_max_subdomains(count):
                 page_no = self.get_page(page_no)
 
+            # 如果到达最大值，就返回
             if self.check_max_pages(page_no):  # maximum pages for Google to avoid getting blocked
                 return self.subdomains
             resp = self.send_req(query, page_no)
@@ -237,6 +255,7 @@ class enumratorBase(object):
             links = self.extract_domains(resp)
 
             # if the previous page hyperlinks was the similar to the current one, then maybe we have reached the last page
+            # 如果返回的链接相似，就下一页
             if links == prev_links:
                 retries += 1
                 page_no = self.get_page(page_no)
@@ -256,7 +275,10 @@ class enumratorBaseThreaded(multiprocessing.Process, enumratorBase):
         subdomains = subdomains or []
         enumratorBase.__init__(self, base_url, engine_name, domain, subdomains, silent=silent, verbose=verbose)
         multiprocessing.Process.__init__(self)
+
+        # 锁
         self.lock = lock
+        # subdomains_queue 子域名队列
         self.q = q
         return
 
@@ -271,6 +293,7 @@ class GoogleEnum(enumratorBaseThreaded):
         subdomains = subdomains or []
         base_url = "https://google.com/search?q={query}&btnG=Search&hl=en-US&biw=&bih=&gbv=1&start={page_no}&filter=0"
         self.engine_name = "Google"
+        # 一页的最大域名(10) + 本身(1) ==11
         self.MAX_DOMAINS = 11
         self.MAX_PAGES = 200
         super(GoogleEnum, self).__init__(base_url, self.engine_name, domain, subdomains, q=q, silent=silent, verbose=verbose)
@@ -287,9 +310,11 @@ class GoogleEnum(enumratorBaseThreaded):
                 if not link.startswith('http'):
                     link = "http://" + link
                 subdomain = urlparse.urlparse(link).netloc
+                # 一连串判断，表示这是新的子域名
                 if subdomain and subdomain not in self.subdomains and subdomain != self.domain:
                     if self.verbose:
                         self.print_("%s%s: %s%s" % (R, self.engine_name, W, subdomain))
+                    # 
                     self.subdomains.append(subdomain.strip())
         except Exception:
             pass
@@ -309,6 +334,7 @@ class GoogleEnum(enumratorBaseThreaded):
     def generate_query(self):
         if self.subdomains:
             fmt = 'site:{domain} -www.{domain} -{found}'
+            # 这里为啥self.MAX_DOMAINS - 2 是因为'site:{domain} -www.{domain} 已经有2个domain了 
             found = ' -'.join(self.subdomains[:self.MAX_DOMAINS - 2])
             query = fmt.format(domain=self.domain, found=found)
         else:
@@ -330,6 +356,7 @@ class YahooEnum(enumratorBaseThreaded):
     def extract_domains(self, resp):
         link_regx2 = re.compile('<span class=" fz-.*? fw-m fc-12th wr-bw.*?">(.*?)</span>')
         link_regx = re.compile('<span class="txt"><span class=" cite fw-xl fz-15px">(.*?)</span>')
+        # 大佬写的正则
         links_list = []
         try:
             links = link_regx.findall(resp)
@@ -340,6 +367,7 @@ class YahooEnum(enumratorBaseThreaded):
                 if not link.startswith('http'):
                     link = "http://" + link
                 subdomain = urlparse.urlparse(link).netloc
+                # 判断host是不是我们想要的
                 if not subdomain.endswith(self.domain):
                     continue
                 if subdomain and subdomain not in self.subdomains and subdomain != self.domain:
@@ -351,15 +379,18 @@ class YahooEnum(enumratorBaseThreaded):
 
         return links_list
 
+    # 这里不sleep了 难道yahoo没有屏蔽机制？
     def should_sleep(self):
         return
 
     def get_page(self, num):
         return num + 10
 
+
     def generate_query(self):
         if self.subdomains:
             fmt = 'site:{domain} -domain:www.{domain} -domain:{found}'
+            # 这里最大域名数量是77，难度yahoo可以写这么多?⬇️
             found = ' -domain:'.join(self.subdomains[:77])
             query = fmt.format(domain=self.domain, found=found)
         else:
@@ -381,6 +412,7 @@ class AskEnum(enumratorBaseThreaded):
     def extract_domains(self, resp):
         links_list = list()
         link_regx = re.compile('<p class="web-result-url">(.*?)</p>')
+        # 这一段有很大相似哦
         try:
             links_list = link_regx.findall(resp)
             for link in links_list:
@@ -397,6 +429,7 @@ class AskEnum(enumratorBaseThreaded):
         return links_list
 
     def get_page(self, num):
+        # 计算方式不一样
         return num + 1
 
     def generate_query(self):
@@ -460,6 +493,7 @@ class BaiduEnum(enumratorBaseThreaded):
         subdomains = subdomains or []
         base_url = 'https://www.baidu.com/s?pn={page_no}&wd={query}&oq={query}'
         self.engine_name = "Baidu"
+        # 百度也太狠了。。
         self.MAX_DOMAINS = 2
         self.MAX_PAGES = 760
         enumratorBaseThreaded.__init__(self, base_url, self.engine_name, domain, subdomains, q=q, silent=silent, verbose=verbose)
@@ -493,6 +527,8 @@ class BaiduEnum(enumratorBaseThreaded):
         return links
 
     def findsubs(self, subdomains):
+        # 整个文件唯一用到Counter的地方
+        # 这段没看懂
         count = Counter(subdomains)
         subdomain1 = max(count, key=count.get)
         count.pop(subdomain1, "None")
@@ -500,6 +536,7 @@ class BaiduEnum(enumratorBaseThreaded):
         return (subdomain1, subdomain2)
 
     def check_response_errors(self, resp):
+        # 惊了...
         return True
 
     def should_sleep(self):
@@ -520,15 +557,17 @@ class NetcraftEnum(enumratorBaseThreaded):
         subdomains = subdomains or []
         self.base_url = 'https://searchdns.netcraft.com/?restriction=site+ends+with&host={domain}'
         self.engine_name = "Netcraft"
+        # 注意
         self.lock = threading.Lock()
         super(NetcraftEnum, self).__init__(self.base_url, self.engine_name, domain, subdomains, q=q, silent=silent, verbose=verbose)
         self.q = q
         return
 
     def req(self, url, cookies=None):
+        # 
         cookies = cookies or {}
         try:
-            resp = self.session.get(url, headers=self.headers, timeout=self.timeout, cookies=cookies)
+            resp = self.session.get(url, headers=self.headers, timeout=self.timeout, cookies=cookies,proxies=proxies)
         except Exception as e:
             self.print_(e)
             resp = None
@@ -586,7 +625,7 @@ class NetcraftEnum(enumratorBaseThreaded):
             pass
         return links_list
 
-
+# 加了个cstf_token
 class DNSdumpster(enumratorBaseThreaded):
     def __init__(self, domain, subdomains=None, q=None, silent=False, verbose=True):
         subdomains = subdomains or []
@@ -600,6 +639,8 @@ class DNSdumpster(enumratorBaseThreaded):
         return
 
     def check_host(self, host):
+        # 查询ip，如果能查出来，说明域名有效
+        # 可能是这个查询引擎会查出已经废弃的域名的原因
         is_valid = False
         Resolver = dns.resolver.Resolver()
         Resolver.nameservers = ['8.8.8.8', '8.8.4.4']
@@ -622,9 +663,9 @@ class DNSdumpster(enumratorBaseThreaded):
         headers['Referer'] = 'https://dnsdumpster.com'
         try:
             if req_method == 'GET':
-                resp = self.session.get(url, headers=headers, timeout=self.timeout)
+                resp = self.session.get(url, headers=headers, timeout=self.timeout,proxies=proxies)
             else:
-                resp = self.session.post(url, data=params, headers=headers, timeout=self.timeout)
+                resp = self.session.post(url, data=params, headers=headers, timeout=self.timeout,proxies=proxies)
         except Exception as e:
             self.print_(e)
             resp = None
@@ -665,7 +706,7 @@ class DNSdumpster(enumratorBaseThreaded):
                 self.subdomains.append(subdomain.strip())
         return links
 
-
+# 最友好的网站.....
 class Virustotal(enumratorBaseThreaded):
     def __init__(self, domain, subdomains=None, q=None, silent=False, verbose=True):
         subdomains = subdomains or []
@@ -679,7 +720,7 @@ class Virustotal(enumratorBaseThreaded):
     # the main send_req need to be rewritten
     def send_req(self, url):
         try:
-            resp = self.session.get(url, headers=self.headers, timeout=self.timeout)
+            resp = self.session.get(url, headers=self.headers, timeout=self.timeout,proxies=proxies)
         except Exception as e:
             self.print_(e)
             resp = None
@@ -708,7 +749,7 @@ class Virustotal(enumratorBaseThreaded):
         except Exception:
             pass
 
-
+# 用起来也挺简单的
 class ThreatCrowd(enumratorBaseThreaded):
     def __init__(self, domain, subdomains=None, q=None, silent=False, verbose=True):
         subdomains = subdomains or []
@@ -721,7 +762,7 @@ class ThreatCrowd(enumratorBaseThreaded):
 
     def req(self, url):
         try:
-            resp = self.session.get(url, headers=self.headers, timeout=self.timeout)
+            resp = self.session.get(url, headers=self.headers, timeout=self.timeout,proxies=proxies)
         except Exception:
             resp = None
 
@@ -747,7 +788,7 @@ class ThreatCrowd(enumratorBaseThreaded):
         except Exception as e:
             pass
 
-
+# 用证书查询
 class CrtSearch(enumratorBaseThreaded):
     def __init__(self, domain, subdomains=None, q=None, silent=False, verbose=True):
         subdomains = subdomains or []
@@ -760,7 +801,7 @@ class CrtSearch(enumratorBaseThreaded):
 
     def req(self, url):
         try:
-            resp = self.session.get(url, headers=self.headers, timeout=self.timeout)
+            resp = self.session.get(url, headers=self.headers, timeout=self.timeout,proxies=proxies)
         except Exception:
             resp = None
 
@@ -792,7 +833,7 @@ class CrtSearch(enumratorBaseThreaded):
         except Exception as e:
             pass
 
-
+# 大佬自建的dns库
 class PassiveDNS(enumratorBaseThreaded):
     def __init__(self, domain, subdomains=None, q=None, silent=False, verbose=True):
         subdomains = subdomains or []
@@ -805,7 +846,7 @@ class PassiveDNS(enumratorBaseThreaded):
 
     def req(self, url):
         try:
-            resp = self.session.get(url, headers=self.headers, timeout=self.timeout)
+            resp = self.session.get(url, headers=self.headers, timeout=self.timeout,proxies=proxies)
         except Exception as e:
             resp = None
 
@@ -831,7 +872,7 @@ class PassiveDNS(enumratorBaseThreaded):
         except Exception as e:
             pass
 
-
+# 端口扫描
 class portscan():
     def __init__(self, subdomains, ports):
         self.subdomains = subdomains
@@ -866,12 +907,14 @@ def main(domain, threads, savefile, ports, silent, verbose, enable_bruteforce, e
     bruteforce_list = set()
     search_list = set()
 
+    # 判断平台
     if is_windows:
         subdomains_queue = list()
     else:
         subdomains_queue = multiprocessing.Manager().list()
 
     # Check Bruteforce Status
+    # 默认开启爆破
     if enable_bruteforce or enable_bruteforce is None:
         enable_bruteforce = True
 
@@ -882,6 +925,7 @@ def main(domain, threads, savefile, ports, silent, verbose, enable_bruteforce, e
             print(R + "Error: Please enter a valid domain" + W)
         return []
 
+    # 加上默认协议
     if not domain.startswith('http://') or not domain.startswith('https://'):
         domain = 'http://' + domain
 
@@ -908,6 +952,7 @@ def main(domain, threads, savefile, ports, silent, verbose, enable_bruteforce, e
 
     chosenEnums = []
 
+    # 默认引擎
     if engines is None:
         chosenEnums = [
             BaiduEnum, YahooEnum, GoogleEnum, BingEnum, AskEnum,
@@ -921,7 +966,9 @@ def main(domain, threads, savefile, ports, silent, verbose, enable_bruteforce, e
                 chosenEnums.append(supported_engines[engine.lower()])
 
     # Start the engines enumeration
+    # 构造列表，里面有构造好的类
     enums = [enum(domain, [], q=subdomains_queue, silent=silent, verbose=verbose) for enum in chosenEnums]
+    # 多线程
     for enum in enums:
         enum.start()
     for enum in enums:
@@ -941,8 +988,10 @@ def main(domain, threads, savefile, ports, silent, verbose, enable_bruteforce, e
         process_count = threads
         output = False
         json_output = False
+        # 开始爆破
         bruteforce_list = subbrute.print_target(parsed_domain.netloc, record_type, subs, resolvers, process_count, output, json_output, search_list, verbose)
 
+    # 合并去重
     subdomains = search_list.union(bruteforce_list)
 
     if subdomains:
@@ -983,3 +1032,7 @@ def interactive():
 
 if __name__ == "__main__":
     interactive()
+# silent : 所有信息不输出
+
+# enumratorBaseThreaded(multiprocessing.Process, enumratorBase)作为父类被继承到各种引擎子类里, 每个引擎根据特点重写enumratorBase里的方法，然后enumratorBaseThreaded里的run()调用
+# enumratorBase里的enumerate, enumerate调用子类里重写的generate_query
